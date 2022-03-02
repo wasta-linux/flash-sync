@@ -1,6 +1,7 @@
 # Flash Sync
 
 Synchronize files to a flash drive intended for use in a simple MP3 player.
+- Renames folders and MP3 files in source location to remove special characters.
 - Uses rsync to synchronize files from a source folder to the chosen destination.
 - Uses fatsort to ensure that the FAT orders the files in alphabetical order.
 - Installs as a desktop and can be run directly from the terminal.
