@@ -1,0 +1,349 @@
+#!/bin/bash
+
+# Correctly update flash memory (FAT) contents for simple music players.
+# Take 2 inputs:
+#   - source folder
+#   - destination device
+#
+# Requires:
+#   - fatsort
+#   - pkexec
+#   - zenity
+#
+# REF:
+#   https://www.pjrc.com/tech/8051/ide/fat32.html
+
+app_name="Flash Sync"
+bin_name="flash-sync"
+
+ensure_script_installation() {
+    if [[ ! $(which "$bin_name") ]]; then
+        # Install script.
+        local local_bin="${HOME}/.local/bin"
+        mkdir -p "$local_bin"
+        cp "$0" "${local_bin}/${bin_name}"
+
+        # Install desktop file.
+        local apps="${HOME}/.local/share/applications"
+        local fsdesktop="${apps}/${bin_name}.desktop"
+        echo "[Desktop Entry]" > "$fsdesktop"
+        echo "Name=$app_name" >> "$fsdesktop"
+        echo "Exec=$bin_name" >> "$fsdesktop"
+        echo "Type=Application" >> "$fsdesktop"
+        echo "StartupNotify=False" >> "$fsdesktop"
+    fi
+}
+
+show_usage() {
+    echo "Usage: $0 [options] [SOURCE] DEST"
+}
+
+show_help() {
+    show_usage
+
+    echo "
+    -c      clean (remove files from) DEST
+    -d      run in debug (set -x) mode
+    -h      show this help
+    -l      list files in DEST in disk order
+    -n      fix filenames in DEST to exclude special characters
+    -s      update FAT to sort files by name in DEST
+
+    If no options are given, update DEST with files from SOURCE.
+    If only DEST is given, list files at DEST (same as using -l option).
+    "
+}
+
+ensure_fatsort() {
+    if [[ ! $(which fatsort) ]]; then
+        pkexec apt-get install fatsort
+    fi
+}
+
+get_disk_partition() {
+    local dir="$1"
+    if [[ -d "$dir" ]]; then
+        df --output=source "$dir" | tail -n1
+    else
+        return 1
+    fi
+}
+
+get_disk() {
+    local dir="$1"
+    local part=$(get_disk_partition "$dir")
+    # Remove digits from end of string.
+    dev=$(echo "$part" | sed -E 's|[0-9]+$||')
+    # Remove trailing "p" if dev == /dev/mmcblk#p.
+    dev=$(echo "$dev" | sed -E 's|([0-9]+)p|\1|')
+    # Confirm device.
+    lsblk "$dev" >/dev/null 2>&1
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+    echo "$dev"
+}
+
+get_fstype() {
+    df --output=fstype "$1" | tail -n1
+}
+
+clean_dir() {
+    # Removal all existing files but not base folder in $1.
+    rm -r "${1}/"*
+}
+
+list_files() {
+    # List files in FAT fiesystem disk order, as read by simple music players.
+    find "$1" -type f
+    # fatsort -l "$1"
+}
+
+safe_rename() {
+    # Rename folders and MP3 files, replacing special characters with '_'.
+    targetdir="$1"
+    okay='a-zA-Z0-9\./_-' # using '\' to escape regex chars for sed
+    # Rename folders and subfolders; ignore target base folder.
+    find "$targetdir" -mindepth 1 -type d -print0 |
+        while IFS= read -r -d '' d0; do
+            local d1=$(echo "$d0" | sed -E "s|[^$okay]|_|g")
+            if [[ "$d0" != "$d1" ]]; then
+                mv "$d0" "$d1"
+            fi
+        done
+    # Rename MP3 files.
+    find "$targetdir" -type f -name '*.mp3' -print0 |
+        while IFS= read -r -d '' f0; do
+            local f1=$(echo "$f0" | sed -E "s|[^$okay]|_|g")
+            if [[ "$f0" != "$f1" ]]; then
+                mv "$f0" "$f1"
+            fi
+        done
+}
+
+safe_rename_gui() {
+    local src="$1"
+
+    title="Rename files?"
+    title_fr="Renommer des fichiers ?"
+    text="All folders and MP3 file names in $src will have special characters replaced by \"_\"."
+    text_fr="Tous les noms des dossiers et fichiers MP3 dans $src seront modifiés en remplaçant des caractères spéciaux par \"_\"."
+    label="Skip"
+    label_fr="Sauter"
+    if [[ $LANG == 'fr_FR.UTF-8' ]]; then
+        title="$title_fr"
+        text="$text_fr"
+        label="$label_fr"
+    fi
+    zenity "$zsize" --title="${app_name}: $title" \
+        --warning --extra-button="$label" --text="$text"
+    if [[ $? -eq 0 ]]; then
+        # User accepted character replacement.
+        title="Renaming files..."
+        title_fr="Modification des noms de fichiers..."
+        if [[ $LANG == 'fr_FR.UTF-8' ]]; then
+            title="$title_fr"
+        fi
+        safe_rename "$src" |
+            zenity "${zsize[@]}" --title="${app_name}: $title" --progress --pulsate --auto-close
+    fi
+}
+
+sort_fat() {
+    # Sort files with fatsort.
+    local targetdir="$1"
+
+    # Ensure valid target.
+    if [[ ! -d "$targetdir" ]]; then
+        echo "ERROR: Not a valid folder: $targetdir"
+        exit 1
+    fi
+    # Get disk partition path.
+    local partition=$(get_disk_partition "$targetdir")
+    if [[ $? -ne 0 ]]; then
+        echo "ERROR: Failed to get disk partition for $targetdir"
+        exit 1
+    fi
+    # Ensure valid filesystem type.
+    local fstype=$(get_fstype "$targetdir")
+    if [[ "$fstype" != 'vfat' ]]; then
+        echo "INFO: $partition is type ${fstype}; not re-sorting."
+        return 1
+    fi
+    # Sort files.
+    sync -f "$targetdir" # allows sorting without unmounting
+    # fatsort options: -f (force) -c (ignore case) -n (natural order)
+    pkexec fatsort -fcn "$partition"
+}
+
+sort_fats_gui() {
+    local dst_list="$1"
+    local title="Sorting files..."
+    local title_fr="Triage de fichiers..."
+    local text="#Sorting files in"
+    local text_fr="#Triage de fichers dans"
+    if [[ $LANG == 'fr_FR.UTF-8' ]]; then
+        local title="$title_fr"
+        local text="$text_fr"
+    fi
+    echo "${dst_list}|" |
+        while read -r -d '|' dst; do
+            echo "$text ${dst}..."
+            sort_fat "$dst"
+        done |
+            zenity "${zsize[@]}" --title="${app_name}: $title" --progress --pulsate --auto-close
+    if [[ $? -ne 0 ]]; then
+        # User cancelled.
+        exit 1
+    fi
+}
+
+update_target() {
+    local src="$1"
+    local dst="$2"
+
+    # Update files from $src.
+    rsync -ruv --info=PROGRESS2 --delete "$src" "$dst"
+    sync -f "$dst"
+    # Fix filenames.
+    safe_rename "$dst"
+}
+
+update_targets_gui() {
+    local src="$1"
+    local dst_list="$2"
+
+    local title="Syncing files..."
+    local title_fr="Synchronisation de fichiers..."
+    local text="#Syncing from $src to"
+    local text_fr="#Synchronisation de $src à"
+    if [[ $LANG == 'fr_FR.UTF-8' ]]; then
+        local title="$title_fr"
+        local text="$text_fr"
+    fi
+    # Extra '|' needed after file-selection output so that last item is included.
+    echo "${dst_list}|" |
+        while read -r -d '|' dst; do
+            echo "$text ${dst}..."
+            update_target "$src" "$dst"
+        done |
+            zenity "${zsize[@]}" --title="${app_name}: $title" --progress --pulsate --auto-close
+    if [[ $? -ne 0 ]]; then
+        # User cancelled.
+        exit 1
+    fi
+}
+
+run_gui() {
+    # Run pseudo GUI with zenity.
+    zsize=("--width=400" "--height=300")
+
+    # Get source folder.
+    title="Choose a source folder..."
+    title_fr="Choisissez un dossier source..."
+    if [[ $LANG == 'fr_FR.UTF-8' ]]; then
+        title="$title_fr"
+    fi
+    src=$(zenity "${zsize[@]}" --title="${app_name}: $title" \
+        --file-selection --directory \
+    )
+    if [[ $? -eq 1 ]]; then
+        # User cancelled.
+        exit 1
+    fi
+
+    # Replace unsafe characters in file names.
+    safe_rename_gui "$src"
+
+    # Get destination folder(s).
+    title="Choose target flash disk(s)..."
+    title_fr="Choissisez disque(s) de flash ciblé(s)..."
+    if [[ $LANG == 'fr_FR.UTF-8' ]]; then
+        title="$title_fr"
+    fi
+    dst_list=$(zenity "${zsize[@]}" --title="${app_name}: $title" \
+        --file-selection --multiple --directory --filename="/media/${USER}/" \
+    )
+    if [[ $? -eq 1 ]]; then
+        # User cancelled. Fall back to listing files at $src.
+        list_files "$src"
+        exit 0
+    fi
+
+    # Update files at each $dst.
+    update_targets_gui "$src" "$dst_list"
+
+    # Ensure proper disk order.
+    sort_fats_gui "$dst_list"
+
+    return $?
+}
+
+
+# Main processing.
+ensure_script_installation
+# Ensure that fatsort is installed.
+ensure_fatsort
+# Handle command line.
+while getopts ":c:dhl:n:s:" o; do
+    case "$o" in
+        c) # clean
+            target=$(realpath "$OPTARG")
+            clean_dir "$target"
+            exit $?
+            ;;
+        d) # debug
+            set -x
+            ;;
+        h) # help
+            show_help
+            exit 0
+            ;;
+        l) # list
+            target=$(realpath "$OPTARG")
+            list_files "$target"
+            exit $?
+            ;;
+        n) # safe rename
+            target=$(realpath "$OPTARG")
+            safe_rename "$target"
+            exit $?
+            ;;
+        s) # sort FAT
+            target=$(realpath "$OPTARG")
+            sort_fat "$target"
+            ;;
+        *) # other
+            show_usage
+            exit 1
+            ;;
+    esac
+done
+shift $((OPTIND-1))
+
+# Ensure valid source and destination.
+if [[ -z "$1" ]]; then
+    # Run pseudo GUI with zenity.
+    run_gui
+    exit $?
+elif [[ ! -d "$1" ]]; then
+    echo "ERROR: Not a valid source folder: $1"
+    exit 1
+elif [[ -z "$2" ]]; then
+    # Only one argument given. List files at that location.
+    list_files "$1"
+    exit $?
+elif [[ ! -d "$2" ]]; then
+    echo "ERROR: Not a valid destination folder: $2"
+    exit 1
+fi
+
+# Update files on FAT filesystem.
+if [[ -z "$src" ]]; then
+    src=$(realpath "$1")
+fi
+if [[ -z "$dst" ]]; then
+    dst=$(realpath "$2")
+fi
+update_target "$src" "$dst"
+sort_fat "$dst"
