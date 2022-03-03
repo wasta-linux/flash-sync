@@ -16,24 +16,6 @@
 app_name="Flash Sync"
 bin_name="flash-sync"
 
-ensure_script_installation() {
-    if [[ ! $(which "$bin_name") ]]; then
-        # Install script.
-        local local_bin="${HOME}/.local/bin"
-        mkdir -p "$local_bin"
-        cp "$0" "${local_bin}/${bin_name}"
-
-        # Install desktop file.
-        local apps="${HOME}/.local/share/applications"
-        local fsdesktop="${apps}/${bin_name}.desktop"
-        echo "[Desktop Entry]" > "$fsdesktop"
-        echo "Name=$app_name" >> "$fsdesktop"
-        echo "Icon=media-removable" >> "$fsdesktop"
-        echo "Exec=$bin_name" >> "$fsdesktop"
-        echo "Type=Application" >> "$fsdesktop"
-        echo "StartupNotify=False" >> "$fsdesktop"
-    fi
-}
 
 show_usage() {
     echo "Usage: $0 [options] [SOURCE] DEST"
@@ -46,6 +28,7 @@ show_help() {
     -c      clean (remove files from) DEST
     -d      run in debug (set -x) mode
     -h      show this help
+    -i      install script and desktop launcher
     -l      list files in DEST in disk order
     -n      fix filenames in DEST to exclude special characters
     -s      update FAT to sort files by name in DEST
@@ -281,6 +264,30 @@ run_gui() {
     return $?
 }
 
+run_install() {
+    if [[ ! $(which "$bin_name") ]]; then
+        # Install script.
+        local local_bin="${HOME}/.local/bin"
+        mkdir -p "$local_bin"
+        cp "$0" "${local_bin}/${bin_name}"
+
+        # Install desktop file.
+        local apps="${HOME}/.local/share/applications"
+        local fsdesktop="${apps}/${bin_name}.desktop"
+        echo "[Desktop Entry]" > "$fsdesktop"
+        echo "Name=$app_name" >> "$fsdesktop"
+        echo "Icon=media-removable" >> "$fsdesktop"
+        echo "Exec=$bin_name" >> "$fsdesktop"
+        echo "Type=Application" >> "$fsdesktop"
+        echo "StartupNotify=False" >> "$fsdesktop"
+
+        # Notify user.
+        echo "\"$app_name\" installed to: $(which "$bin_name")"
+    else
+        echo "\"$app_name\" already installed."
+    fi
+}
+
 run_uninstall() {
     # Uninstall script and desktop launcher.
     find "${HOME}/.local/bin" "${HOME}/.local/share/applications" -name "${bin_name}"* \
@@ -289,11 +296,10 @@ run_uninstall() {
 
 
 # Main processing.
-ensure_script_installation
 # Ensure that fatsort is installed.
 ensure_fatsort
 # Handle command line.
-while getopts ":c:dhl:n:s:u" o; do
+while getopts ":c:dhil:n:s:u" o; do
     case "$o" in
         c) # clean
             target=$(realpath "$OPTARG")
@@ -305,6 +311,10 @@ while getopts ":c:dhl:n:s:u" o; do
             ;;
         h) # help
             show_help
+            exit 0
+            ;;
+        i) # install
+            run_install
             exit 0
             ;;
         l) # list

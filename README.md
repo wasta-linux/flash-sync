@@ -16,6 +16,7 @@ Usage: flash-sync [options] [SOURCE] DEST
     -c      clean (remove files from) DEST
     -d      run in debug (set -x) mode
     -h      show this help
+    -i      install script and desktop launcher
     -l      list files in DEST in disk order
     -n      fix filenames in DEST to exclude special characters
     -s      update FAT to sort files by name in DEST
