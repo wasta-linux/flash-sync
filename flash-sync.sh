@@ -49,6 +49,7 @@ show_help() {
     -l      list files in DEST in disk order
     -n      fix filenames in DEST to exclude special characters
     -s      update FAT to sort files by name in DEST
+    -u      uninstall script and desktop launcher
 
     If no options are given, update DEST with files from SOURCE.
     If only DEST is given, list files at DEST (same as using -l option).
@@ -280,13 +281,19 @@ run_gui() {
     return $?
 }
 
+run_uninstall() {
+    # Uninstall script and desktop launcher.
+    find "${HOME}/.local/bin" "${HOME}/.local/share/applications" -name "${bin_name}"* \
+        -exec rm -i {} \;
+}
+
 
 # Main processing.
 ensure_script_installation
 # Ensure that fatsort is installed.
 ensure_fatsort
 # Handle command line.
-while getopts ":c:dhl:n:s:" o; do
+while getopts ":c:dhl:n:s:u" o; do
     case "$o" in
         c) # clean
             target=$(realpath "$OPTARG")
@@ -313,6 +320,10 @@ while getopts ":c:dhl:n:s:" o; do
         s) # sort FAT
             target=$(realpath "$OPTARG")
             sort_fat "$target"
+            ;;
+        u) # uninstall
+            run_uninstall
+            exit 0
             ;;
         *) # other
             show_usage
