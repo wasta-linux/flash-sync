@@ -28,6 +28,7 @@ ensure_script_installation() {
         local fsdesktop="${apps}/${bin_name}.desktop"
         echo "[Desktop Entry]" > "$fsdesktop"
         echo "Name=$app_name" >> "$fsdesktop"
+        echo "Icon=media-removable" >> "$fsdesktop"
         echo "Exec=$bin_name" >> "$fsdesktop"
         echo "Type=Application" >> "$fsdesktop"
         echo "StartupNotify=False" >> "$fsdesktop"
