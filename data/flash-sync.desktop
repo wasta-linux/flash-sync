@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Flash Sync
+Icon=media-removable
+Exec=/usr/bin/flash-sync
+Type=Application
+StartupNotify=False
