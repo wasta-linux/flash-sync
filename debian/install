@@ -1,2 +1,2 @@
-bin/flash-sync              usr/bin/flash-sync
+bin/flash-sync              usr/bin/
 data/flash-sync.desktop     usr/share/applications
