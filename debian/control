@@ -1,0 +1,17 @@
+Source: flash-sync
+Section: utils
+Priority: optional
+Maintainer: Nate Marti <nate_marti@sil.org>
+Build-Depends:
+ debhelper (>= 11.0.0),
+Standards-Version: 3.9.7
+Homepage: https://github.com/wasta-linux/traffic-cop
+
+Package: flash-sync
+Architecture: all
+Depends:
+ fatsort,
+ rsync,
+ zenity,
+ ${misc:Depends}
+Description: Synchronize files to a flash drive intended for use in a simple MP3 player.
