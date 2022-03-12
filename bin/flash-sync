@@ -25,14 +25,14 @@ show_help() {
     show_usage
 
     echo "
-    -c      clean (remove files from) DEST
+    -c      clean (remove all files in) DEST
     -d      run in debug (set -x) mode
     -h      show this help
-    -i      install script and desktop launcher
+    -i      install script and desktop launcher (if running from source)
     -l      list files in DEST in disk order
     -n      fix filenames in DEST to exclude special characters
     -s      update FAT to sort files by name in DEST
-    -u      uninstall script and desktop launcher
+    -u      uninstall script and desktop launcher (if installed using '-i')
 
     If no options are given, update DEST with files from SOURCE.
     If only DEST is given, list files at DEST (same as using -l option).
