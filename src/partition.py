@@ -1,5 +1,6 @@
-from device import ByteChunk
 from device import SignedSector
+from device import ByteChunk
+from util import get_lba_address_from_cluster
 
 
 class Base(ByteChunk):
@@ -11,7 +12,7 @@ class Base(ByteChunk):
         self.cluster_low = self.get_cluster_low()
 
     def is_deleted(self):
-        return self.get_bytes(0, 1) == '\xe5'
+        return self.get_bytes(0, 1) == b'\xe5'
 
     def is_empty(self):
         return self.get_bytes(0, 1) == b'\x00'
@@ -20,9 +21,9 @@ class Base(ByteChunk):
         return self.get_bytes(0x0c, 1) == b'\x00' and self.get_bytes(0x0b, 1) == b'\x0f'
 
     def get_cluster_low(self):
-        return self.bytes_to_int(self.get_bytes(26, 2))
+        return self.get_bytes(26, 2)
 
-class Dir(Base):
+class Entry(Base):
     def __init__(self, hex_data):
         super().__init__(hex_data)
 
@@ -36,6 +37,11 @@ class Dir(Base):
             self.short_filename = self.get_short_filename(11)
             self.extension = None
         self.cluster_high = self.get_cluster_high()
+        self.cluster = self.bytes_to_int(self.cluster_low + self.cluster_high)
+        self.lba_address = get_lba_address_from_cluster(
+            self.cluster,
+
+        )
         self.filesize = self.get_filesize()
         self.long_filename = None
 
@@ -66,11 +72,9 @@ class Dir(Base):
                 value -= k
         return attribs
 
-    def is_deleted(self):
-        return self.get_bytes(0, 1) == hex(0xe5)
-
     def is_end_of_dir(self):
-        return self.get_bytes(0, 1) == hex(0x00)
+        # return self.get_bytes(0, 1) == hex(0x00)
+        return self.get_bytes(0, 1) == b'\x00'
 
     def get_created_time(self):
         time_ref = {
@@ -96,7 +100,7 @@ class Dir(Base):
         return None
 
     def get_cluster_high(self):
-        return self.bytes_to_int(self.get_bytes(20, 2))
+        return self.get_bytes(20, 2)
 
     def get_filesize(self):
         return self.bytes_to_int(self.get_bytes(28, 4))
@@ -136,6 +140,14 @@ class VolumeID(SignedSector):
         self.cluster_begin_lba = self.fat_begin_lba + (self.number_of_fats * self.sectors_per_fat)
         self.sectors_per_cluster = self.get_sectors_per_cluster()
         self.root_dir_first_cluster = self.get_root_cluster()
+
+        self.root_dir_begin_lba = get_lba_address_from_cluster(
+            self.root_dir_first_cluster,
+            self.cluster_begin_lba,
+            self.sectors_per_cluster,
+        )
+        self.fat_begin_offset = self.fat_begin_lba * self.bytes_per_sector
+        self.total_fat_length = self.number_of_fats * self.sectors_per_fat * self.bytes_per_sector
 
     def get_bytes_per_sector(self):
         return self.bytes_to_int(self.get_bytes(11, 2))
@@ -188,17 +200,3 @@ class FAT(ByteChunk):
         all_bytes = bytearray(self.hex_data)
         used_bytes = all_bytes.rstrip(b'\x00')
         return int(len(used_bytes) / 4)
-
-class FATCluster(ByteChunk):
-    def __init__(self):
-        self.begin_lba = 0
-        self.next_cluster = None
-
-    def is_end_of_chain(self):
-        pass
-
-    def is_bad_cluster(self):
-        pass
-
-    def is_unused(self):
-        pass

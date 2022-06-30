@@ -1,4 +1,20 @@
 
+
+"""
+Ref:
+    https://en.wikipedia.org/wiki/Design_of_the_FAT_file_system
+
+Region 	    Size in sectors 	                        Contents
+--------    ----------------                            --------
+Reserved    (number of reserved sectors) 	            Boot Sector
+  sectors                                               FS Information Sector (FAT32 only)
+                                                        More reserved sectors (optional)
+FAT Region 	(number of FATs) * (sectors per FAT)        File Allocation Table #1
+                                                        File Allocation Table #2 ... (optional)
+Data Region (number of clusters) * (sectors per cluster) Files and directories
+"""
+
+
 class ByteChunk():
     def __init__(self, hex_data):
         self.hex_data = hex_data
@@ -33,6 +49,7 @@ class ByteChunk():
             value = int(''.join(format(b, '02x') for b in little_endian_bytes), 16)
         return value
 
+
 class Sector(ByteChunk):
     def __init__(self, hex_data, sector_size=512):
         super().__init__(hex_data)
@@ -51,7 +68,6 @@ class PartitionTable(ByteChunk):
         super().__init__(hex_data)
 
         self.begin_lba = self.get_begin_lba()
-
         self.sector_size = sector_size
         self.boot_flag = self.get_boot_flag()
         self.chs_begin = self.get_chs_begin()
@@ -102,13 +118,18 @@ class MBR(SignedSector):
     def __init__(self, hex_data):
         super().__init__(hex_data)
 
-        self.partition1 = self.get_partition_bytes(1)
-        self.partition2 = self.get_partition_bytes(2)
-        self.partition3 = self.get_partition_bytes(3)
-        self.partition4 = self.get_partition_bytes(4)
+        self.partition_entries = {}
+        for p in range(1, 5):
+            self.partition_entries[p] = self.get_partition_bytes(p)
+
+        # self.partition1 = self.get_partition_bytes(1)
+        # self.partition2 = self.get_partition_bytes(2)
+        # self.partition3 = self.get_partition_bytes(3)
+        # self.partition4 = self.get_partition_bytes(4)
 
     def get_partition_bytes(self, part_num):
         return self.get_bytes(446+16*(part_num-1), 16)
+
 
 """=========================================================================="""
 
