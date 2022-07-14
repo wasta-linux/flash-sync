@@ -1,134 +1,202 @@
-from device import SignedSector
+from cluster import BaseEntry
+from cluster import Cluster
+from cluster import Dir
+from cluster import LFN
 from device import ByteChunk
+from device import SignedSector
+from file import File
+from util import chunker
 from util import get_lba_address_from_cluster
+from util import print_attribs
 
 
-class Base(ByteChunk):
-    def __init__(self, hex_data):
-        super().__init__(hex_data)
-
-        self.deleted = self.is_deleted()
-        self.empty = self.is_empty()
-        self.cluster_low = self.get_cluster_low()
-
-    def is_deleted(self):
-        return self.get_bytes(0, 1) == b'\xe5'
-
-    def is_empty(self):
-        return self.get_bytes(0, 1) == b'\x00'
-
-    def is_long_form_name(self):
-        return self.get_bytes(0x0c, 1) == b'\x00' and self.get_bytes(0x0b, 1) == b'\x0f'
-
-    def get_cluster_low(self):
-        return self.get_bytes(26, 2)
-
-class Entry(Base):
-    def __init__(self, hex_data):
-        super().__init__(hex_data)
-
-        self.attribs = self.get_attribs()
-        if 'volume ID' not in self.attribs and 'directory' not in self.attribs:
-            # regular file
-            self.short_filename = self.get_short_filename(8)
-            self.extension = self.get_extension()
-        else:
-            # directory
-            self.short_filename = self.get_short_filename(11)
-            self.extension = None
-        self.cluster_high = self.get_cluster_high()
-        self.cluster = self.bytes_to_int(self.cluster_low + self.cluster_high)
-        self.lba_address = get_lba_address_from_cluster(
-            self.cluster,
-
+class Partition():
+    def __init__(self, fat_device, part_table):
+        self.begin_offset = part_table.begin_lba * part_table.sector_size
+        # Gather VolumeID details.
+        self.volume_id = VolumeID(
+            fat_device.read_bytes(part_table.sector_size, self.begin_offset),
+            part_table.begin_lba
         )
-        self.filesize = self.get_filesize()
-        self.long_filename = None
+        self.cluster_size = self.volume_id.bytes_per_sector * self.volume_id.sectors_per_cluster
+        self.clusters_begin_offset = self.volume_id.cluster_begin_lba * self.volume_id.bytes_per_sector
+        self.root_dir_begin_offset = self.volume_id.root_dir_begin_lba * self.volume_id.bytes_per_sector
 
-    def get_short_filename(self, end):
-        return self.get_bytes(0, end).decode()
+        # Gather FAT details.
+        self.fats = {}
+        for f in range(1, 3):
+            read_length = self.volume_id.sectors_per_fat * self.volume_id.bytes_per_sector
+            base_lba = int(self.volume_id.fat_begin_offset / self.volume_id.bytes_per_sector)
+            begin_lba = base_lba + (f - 1) * self.volume_id.sectors_per_fat
+            seek_length = begin_lba * self.volume_id.bytes_per_sector
+            fat_bytes = fat_device.read_bytes(read_length, seek_length)
+            self.fats[f] = FAT(fat_device, fat_bytes, begin_lba)
 
-    def get_extension(self):
-        return self.get_bytes(8, 3).decode()
+        # Build file and directory lists (in disk order).
+        self.files = self.get_file_list(fat_device)
+        self.dir_cluster_indexes = self.get_dir_cluster_indexes(fat_device)
+        self.directories = self.get_dir_list(fat_device)
 
-    def get_attribs(self):
-        attribs = []
-        attribs_ref = {
-            1: 'read only',     # 2**0
-            2: 'hidden',        # 2**1
-            4: 'system',        # 2**2
-            8: 'volume ID',     # 2**3
-            16: 'directory',    # 2**4
-            32: 'archive',      # 2**5
-            64: 'unused [0]',   # 2**6
-            128: 'unused [0]',  # 2**7
+    def get_file_list(self, device, files=list()):
+        entries = self.get_child_entries(device, self.volume_id.root_dir_first_cluster)
+        return self.get_files_from_entries(device, files, ['/'], entries)
+
+    def get_child_entries(self, device, cluster_index):
+        cluster = Cluster(
+            self.get_cluster_bytes(device, cluster_index),
+            self.volume_id.cluster_begin_lba
+        )
+        return self.get_entries_from_cluster(cluster)
+
+    def get_files_from_entries(self, device, files, parent_path, entries):
+        long_name = ''
+        for e in entries:
+            if not e.is_deleted():
+                if e.is_empty():
+                    continue
+                elif e.is_long_form_name():
+                    entry = LFN(e.hex_data)
+                    long_name = entry.long_filename + long_name
+                else:
+                    entry = Dir(e.hex_data)
+                    if entry.short_filename.rstrip() == '.' or entry.short_filename.rstrip() == '..':
+                        # Skip "." and ".." dir shortcut.
+                        continue
+                    entry.long_filename = long_name
+                    long_name = '' # reset
+                    node = File(entry)
+                    node.parents = parent_path[:]
+                    files.append(node)
+                    if node.type == 'directory':
+                        # Recurse into directory.
+                        child_entries = self.get_child_entries(device, entry.cluster)
+                        files = self.get_files_from_entries(
+                            device,
+                            files,
+                            parent_path + [entry.long_filename],
+                            child_entries
+                        )
+        return files
+
+    def get_dir_list(self, device):
+        dir_groups = {}
+        for i in self.dir_cluster_indexes:
+            cluster_chain = self.get_chain(device, i)
+            entries = self.get_entries_from_chain(device, cluster_chain.copy())
+            file_groups = self.split_entries_into_file_groups(entries)
+            dir_groups[i] = {'chain': cluster_chain, 'files': file_groups}
+        return dir_groups
+
+    def get_chain(self, device, i):
+        # Get full cluster chain.
+        chain = [i]
+        end = False
+        while not end:
+            next = self.get_next_cluster_index(device, i)
+            if next is None:
+                end = True
+            else:
+                chain.append(next)
+        return chain
+
+    def get_dir_cluster_indexes(self, device, indexes=list(), cluster_index=None):
+        if cluster_index is None:
+            cluster_index = self.volume_id.root_dir_first_cluster
+        entries = self.get_child_entries(device, cluster_index)
+        for e in entries:
+            if not e.is_deleted():
+                if e.is_empty():
+                    continue
+                elif e.is_long_form_name():
+                    continue
+                else:
+                    entry = Dir(e.hex_data)
+                    if entry.short_filename.rstrip() == '.' or entry.short_filename.rstrip() == '..':
+                        # Skip "." and ".." dir shortcut.
+                        continue
+                    if 'volume ID' in entry.attribs:
+                        indexes.append(entry.cluster)
+                    if 'directory' in entry.attribs:
+                        indexes.append(entry.cluster)
+                        # Recurse into directory.
+                        indexes = self.get_dir_cluster_indexes(device, indexes, entry.cluster)
+        return indexes
+
+    def split_entries_into_file_groups(self, entries):
+        file_entry_groups = {}
+        group = []
+        long_name = ''
+        for i, e in enumerate(entries):
+            if not e.is_deleted():
+                if e.is_empty():
+                    continue
+                elif e.is_long_form_name():
+                    entry = LFN(e.hex_data)
+                    group.append(entry)
+                    long_name = entry.long_filename + long_name
+                else:
+                    entry = Dir(e.hex_data)
+                    entry.long_filename = long_name
+                    group.append(entry)
+                    n = entry.long_filename if entry.long_filename else entry.short_filename
+                    # file_entry_groups[i] = [n, group]
+                    file_entry_groups[n] = group
+                    long_name = ''
+                    group = []
+        return file_entry_groups
+
+    def get_entries_from_chain(self, device, chain):
+        entries = []
+        while chain:
+            cluster = self.get_cluster_obj(device, chain.pop(0))
+            entries.extend(self.get_entries_from_cluster(cluster))
+        return entries
+
+    def get_entries_from_cluster(self, cluster_obj):
+        entries = chunker(cluster_obj.hex_data, 32)
+        return [BaseEntry(e) for e in entries]
+
+    def get_cluster_bytes(self, device, cluster_index):
+        return device.read_bytes(self.cluster_size, self.get_cluster_offset(cluster_index))
+
+    def get_cluster_obj(self, device, cluster_index):
+        return Cluster(self.get_cluster_bytes(device, cluster_index))
+
+    def get_next_cluster_index(self, device, cluster_index):
+        next_indexes = {
+            1: None,
+            2: None,
         }
-        value = self.bytes_to_int(self.get_bytes(11, 1))
-        keys = [k for k in attribs_ref.keys()]
-        keys.reverse()
-        for k in keys:
-            if value >= k:
-                attribs.append(attribs_ref.get(k))
-                value -= k
-        return attribs
+        for i, f in self.fats.items():
+            next_index = f.get_next_cluster_index(device, cluster_index)
+            next_indexes[i] = next_index
+        if next_indexes.get(1) != next_indexes.get(2):
+            print(f"WARNING: Entry in FAT1 does not match entry in FAT2")
+        return next_indexes.get(1)
 
-    def is_end_of_dir(self):
-        # return self.get_bytes(0, 1) == hex(0x00)
-        return self.get_bytes(0, 1) == b'\x00'
+    def get_cluster_offset(self, cluster_index):
+        return self.clusters_begin_offset + (cluster_index - 2) * self.cluster_size
 
-    def get_created_time(self):
-        time_ref = {
-            2**0: 1,       # bi-seconds
-            2**1: 2,
-            2**2: 4,
-            2**3: 8,
-            2**4: 16,
-            2**5: 1,        # minutes
-            2**6: 2,
-            2**7: 4,
-            2**8: 8,
-            2**9: 16,
-            2**10: 32,
-            2**11: 1,       # hours
-            2**12: 2,
-            2**13: 4,
-            2**14: 8,
-            2**15: 16,
-        }
-        # value = int(self.get_bytes(15, 2))
-        # timestamp = f""
-        return None
-
-    def get_cluster_high(self):
-        return self.get_bytes(20, 2)
-
-    def get_filesize(self):
-        return self.bytes_to_int(self.get_bytes(28, 4))
-
-class LFN(Base):
-    def __init__(self, hex_data):
-        super().__init__(hex_data)
-
-        self.long_filename = self.get_long_form_name()
-        self.seq_num = self.get_seq_num()
-
-    def get_seq_num(self):
-        return self.bytes_to_int(self.get_bytes(0, 1))
-
-    def get_long_form_name(self):
-        name_bytes = bytearray(self.get_bytes(1, 10) + self.get_bytes(14, 12) + self.get_bytes(28, 4))
-        name_bytes = name_bytes.rstrip(b'\xff')
-        name = name_bytes.decode('UTF-16')
-        if name[-1] == '\x00':
-            name = name[:-1]
-        return name
+    def set_cluster_chain_entries(self, device, cluster_chain, entries):
+        entries_copy = entries.copy()
+        if len(entries_copy) > len(cluster_chain) * 128:
+            print(f"ERROR: Too many entries for reserved space.")
+            return
+        for c in cluster_chain:
+            c_offset = self.get_cluster_offset(c)
+            i = 0
+            while entries_copy and i < 128:
+                e = entries_copy.pop(0)
+                seek_length = c_offset + 32*i
+                new_bytes = e.hex_data
+                device.write_bytes(new_bytes, seek_length)
+                i += 1
 
 class VolumeID(SignedSector):
     def __init__(self, hex_data, lba_begin=0):
         super().__init__(hex_data)
 
         self.begin_lba = lba_begin
-        # self.begin_signature = self.get_begin_signature()
         self.end_signature = self.get_end_signature()
 
         self.bytes_per_sector = self.get_bytes_per_sector()
@@ -162,22 +230,27 @@ class VolumeID(SignedSector):
         return self.bytes_to_int(self.get_bytes(0x10, 1))
 
     def get_sectors_per_fat(self):
-        return self.bytes_to_int(self.get_bytes(0x24, 4))
+        # TODO: Seems to only be 2 bytes long (not 4) if partition is < 1GB.
+        try:
+            sector_count = self.bytes_to_int(self.get_bytes(0x24, 4))
+        except MemoryError:
+            print(f"ERROR: MemoryError. Check if partition is < 1GB.")
+            exit(1)
+        return sector_count
 
     def get_root_cluster(self):
         return self.bytes_to_int(self.get_bytes(44, 4))
 
 class FAT(ByteChunk):
-    def __init__(self, hex_data, begin_lba=0):
+    def __init__(self, device, hex_data, begin_lba=0):
         super().__init__(hex_data)
 
-        self.hex_data = self.hex_data[:1024]
         self.begin_lba = begin_lba
+        self.begin_offset = self.begin_lba * device.sector_size
         self.id = self.get_id() # first 4 bytes: 0xf0 (non-partitioned) or 0xf8 (partitioned)
         self.end_of_chain_marker = self.get_end_of_chain_marker()
         self.cluster_size = 4 # for all FAT32
         self.number_of_used_clusters = self.get_number_of_used_clusters()
-        self.clusters = self.get_used_clusters()
 
     def get_id(self):
         return self.get_bytes(0, 4)
@@ -200,3 +273,14 @@ class FAT(ByteChunk):
         all_bytes = bytearray(self.hex_data)
         used_bytes = all_bytes.rstrip(b'\x00')
         return int(len(used_bytes) / 4)
+
+    def get_fat_entry(self, device, cluster_index):
+        seek_length = self.begin_offset + cluster_index * self.cluster_size
+        return device.read_bytes(self.cluster_size, seek_length)
+
+    def get_next_cluster_index(self, device, cluster_index):
+        next_index = None
+        fat_entry = self.get_fat_entry(device, cluster_index)
+        if fat_entry != self.end_of_chain_marker and fat_entry != self.id:
+            next_index = self.bytes_to_int(fat_entry)
+        return next_index

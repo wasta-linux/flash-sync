@@ -15,6 +15,22 @@ Data Region (number of clusters) * (sectors per cluster) Files and directories
 """
 
 
+class Device():
+    def __init__(self, device):
+        self.path = device
+        self.sector_size = 512
+
+    def read_bytes(self, read_length, seek_length=0):
+        with open(self.path, 'rb') as d:
+            d.seek(seek_length)
+            return d.read(read_length)
+
+    def write_bytes(self, new_bytes, seek_length=0):
+        with open(self.path, 'wb') as d:
+            d.seek(seek_length)
+            # print(f"Would write {len(new_bytes)} B to {self.path} at pos {seek_length}.")
+            d.write(new_bytes)
+
 class ByteChunk():
     def __init__(self, hex_data):
         self.hex_data = hex_data
@@ -122,44 +138,5 @@ class MBR(SignedSector):
         for p in range(1, 5):
             self.partition_entries[p] = self.get_partition_bytes(p)
 
-        # self.partition1 = self.get_partition_bytes(1)
-        # self.partition2 = self.get_partition_bytes(2)
-        # self.partition3 = self.get_partition_bytes(3)
-        # self.partition4 = self.get_partition_bytes(4)
-
     def get_partition_bytes(self, part_num):
         return self.get_bytes(446+16*(part_num-1), 16)
-
-
-"""=========================================================================="""
-
-class FileSystem():
-    m_rootDir = ''
-
-    def initFDT(self):
-        pass
-
-    def sort(self):
-        pass
-
-class VolumeAccess():
-    FAT_END_CHAIN = ''
-    m_bootSector = ''
-    m_FAT1Data = ''
-    m_FAT2Data = ''
-    m_hDevice = ''
-
-    def initData(self):
-        pass
-
-    def lockAndUnmount(self):
-        pass
-
-    def readChainedClusters(self):
-        pass
-
-    def writeChainedClusters(self):
-        pass
-
-def isDeletedEntry(aEntryToCheck):
-    return aEntryToCheck.DIR_Name[0] == char(0xE5)
