@@ -1,3 +1,4 @@
+import config
 from cluster import BaseEntry
 from cluster import Cluster
 from cluster import Dir
@@ -21,6 +22,7 @@ class Partition():
         self.cluster_size = self.volume_id.bytes_per_sector * self.volume_id.sectors_per_cluster
         self.clusters_begin_offset = self.volume_id.cluster_begin_lba * self.volume_id.bytes_per_sector
         self.root_dir_begin_offset = self.volume_id.root_dir_begin_lba * self.volume_id.bytes_per_sector
+        self.entry_size = 32
 
         # Gather FAT details.
         self.fats = {}
@@ -83,8 +85,12 @@ class Partition():
         for i in self.dir_cluster_indexes:
             cluster_chain = self.get_chain(device, i)
             entries = self.get_entries_from_chain(device, cluster_chain.copy())
-            file_groups = self.split_entries_into_file_groups(entries)
-            dir_groups[i] = {'chain': cluster_chain, 'files': file_groups}
+            file_groups, deleted_count = self.split_entries_into_file_groups(entries)
+            dir_groups[i] = {
+                'chain': cluster_chain,
+                'deleted-count': deleted_count,
+                'files': file_groups,
+            }
         return dir_groups
 
     def get_chain(self, device, i):
@@ -126,11 +132,17 @@ class Partition():
         file_entry_groups = {}
         group = []
         long_name = ''
+        lfn_count = 0
+        deleted_count = 0
         for i, e in enumerate(entries):
-            if not e.is_deleted():
+            if e.is_deleted():
+                deleted_count += 1          # count deleted dir entry
+                deleted_count += lfn_count  # count LFN entries for deleted dir entries
+            else:
                 if e.is_empty():
                     continue
                 elif e.is_long_form_name():
+                    lfn_count += 1
                     entry = LFN(e.hex_data)
                     group.append(entry)
                     long_name = entry.long_filename + long_name
@@ -139,11 +151,11 @@ class Partition():
                     entry.long_filename = long_name
                     group.append(entry)
                     n = entry.long_filename if entry.long_filename else entry.short_filename
-                    # file_entry_groups[i] = [n, group]
                     file_entry_groups[n] = group
                     long_name = ''
+                    lfn_count = 0
                     group = []
-        return file_entry_groups
+        return file_entry_groups, deleted_count
 
     def get_entries_from_chain(self, device, chain):
         entries = []
@@ -177,20 +189,37 @@ class Partition():
     def get_cluster_offset(self, cluster_index):
         return self.clusters_begin_offset + (cluster_index - 2) * self.cluster_size
 
-    def set_cluster_chain_entries(self, device, cluster_chain, entries):
+    def set_cluster_chain_entries(self, device, cluster_chain, entries, deleted_count):
         entries_copy = entries.copy()
-        if len(entries_copy) > len(cluster_chain) * 128:
+        num_entries_per_cluster = self.cluster_size / self.entry_size
+        if len(entries_copy) > len(cluster_chain) * num_entries_per_cluster:
             print(f"ERROR: Too many entries for reserved space.")
             return
+        # Store new data in memory before writing it all at once.
+        new_data = {}
         for c in cluster_chain:
+            new_data[c] = {}
             c_offset = self.get_cluster_offset(c)
             i = 0
-            while entries_copy and i < 128:
+            while entries_copy and i < num_entries_per_cluster:
                 e = entries_copy.pop(0)
-                seek_length = c_offset + 32*i
-                new_bytes = e.hex_data
-                device.write_bytes(new_bytes, seek_length)
+                seek_length = c_offset + self.entry_size * i
+                new_data[c][seek_length] = e.hex_data
                 i += 1
+            while deleted_count > 0 and len(new_data[c]) < num_entries_per_cluster:
+                # Add 0-byte entries in place of deleted file clusters.
+                seek_length = c_offset + self.entry_size * i
+                new_data[c][seek_length] = b'\x00' * self.entry_size
+                deleted_count -= 1
+                i += 1
+        # Write out new data.
+        if config.VERBOSE:
+            print(f"Written bytes for chain {cluster_chain}:")
+        for c, seeks in new_data.items():
+            for s, data in seeks.items():
+                if config.VERBOSE:
+                    ByteChunk(data).hexdump(s)
+                device.write_bytes(data, s)
 
 class VolumeID(SignedSector):
     def __init__(self, hex_data, lba_begin=0):

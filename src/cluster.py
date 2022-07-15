@@ -86,6 +86,7 @@ class Dir(BaseEntry):
         return self.get_bytes(0, 1) == b'\x00'
 
     def get_created_time(self):
+        # TODO: Parse timestamps.
         time_ref = {
             2**0: 1,       # bi-seconds
             2**1: 2,

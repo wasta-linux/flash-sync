@@ -15,6 +15,11 @@ class Disk():
             if part_table.is_valid():
                 self.partitions[p] = Partition(self.fat_device, part_table)
 
-    def get_boot_sector(self, size=512):
+    def get_boot_sector(self, type='MBR'):
         # TODO: Assumes MBR.
-        return MBR(self.fat_device.read_bytes(size))
+        if type == 'MBR':
+            boot_sector = MBR(self.fat_device.read_bytes(512))
+        else:
+            print(f"ERROR: {type} not supported.")
+            exit(1)
+        return boot_sector

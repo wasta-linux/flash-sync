@@ -1,6 +1,6 @@
-
-
 """
+DEVICE LAYOUT
+
 Ref:
     https://en.wikipedia.org/wiki/Design_of_the_FAT_file_system
 
@@ -9,11 +9,10 @@ Region 	    Size in sectors 	                        Contents
 Reserved    (number of reserved sectors) 	            Boot Sector
   sectors                                               FS Information Sector (FAT32 only)
                                                         More reserved sectors (optional)
-FAT Region 	(number of FATs) * (sectors per FAT)        File Allocation Table #1
+FAT Region 	(number of FATs)*(sectors per FAT)          File Allocation Table #1
                                                         File Allocation Table #2 ... (optional)
-Data Region (number of clusters) * (sectors per cluster) Files and directories
+Data Region (number of clusters)*(sectors per cluster)  Files and directories
 """
-
 
 class Device():
     def __init__(self, device):
@@ -37,14 +36,21 @@ class ByteChunk():
         self.length = len(self.hex_data)
         self.size = self.length
 
-    def print_hex_data(self, start=0, end=None):
-        o = 0
+    def hexdump(self, offset=0, start=0, end=None):
+        o = offset
+        line = '|'
         for i, b in enumerate(self.hex_data[start:end]):
+            unprintables = [0x00]
+            # ASCII printables: 0x20 - 0x7f; see $ man ascii
+            c = chr(b) if b >= 0x20 and b < 0x7f else '.'
+            line += f"{c}"
             if i % 16 == 0:
                 print(f"{o:08x}  {b:02x} ", end='')
                 o += 0x10
             elif i % 16 == 15:
-                print(f"{b:02x} ")
+                line += '|'
+                print(f"{b:02x}  {line}")
+                line = '|'
             elif i % 16 == 7:
                 print(f"{b:02x}  ", end='')
             elif i == len(self.hex_data[start:end]) - 1:
@@ -121,7 +127,7 @@ class SignedSector(Sector):
 
         if not self.is_valid_sector():
             print(f"ERROR: Incorrect end signature: {self.end_signature}. Expected: {hex(0x55aa)}")
-            self.print_hex_data()
+            self.hexdump()
             exit(1)
 
     def get_end_signature(self):

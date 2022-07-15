@@ -18,6 +18,7 @@ import argparse
 
 from pprint import pprint
 
+import config
 from disk import Disk
 from util import sort_dir_groups
 
@@ -27,21 +28,18 @@ def show_directories(disk):
         dir_groups = p.get_dir_list(disk.fat_device)
         pprint(dir_groups)
 
-def sort_files(disk, verbose=False):
+def sort_files(disk):
     for p in disk.partitions.values():
         dir_groups = p.get_dir_list(disk.fat_device)
-        sorted_dir_groups = sort_dir_groups(disk.fat_device, dir_groups, verbose)
+        sorted_dir_groups = sort_dir_groups(disk.fat_device, dir_groups)
         for g in sorted_dir_groups.values():
             chain = g.get('chain')
+            deleted_count = g.get('deleted-count')
             entries = []
-            # for fdict in g.get('files'):
-            #     elist = list(fdict.values())[0]
-            #     for e in elist:
-            #         entries.append(e)
             for flist in g.get('files'):
                 entries.extend(flist[1])
             if len(entries) > 0:
-                p.set_cluster_chain_entries(disk.fat_device, chain, entries)
+                p.set_cluster_chain_entries(disk.fat_device, chain, entries, deleted_count)
 
 def list_files(disk, filter=None):
     for p in disk.partitions.values():
@@ -136,6 +134,7 @@ def main():
 
     args = parser.parse_args()
     fat_disk = Disk(args.device[0])
+    config.VERBOSE = args.verbose
 
     if args.dir:
         show_directories(fat_disk)
@@ -147,7 +146,7 @@ def main():
         list_files(fat_disk)
         exit()
     if args.sort:
-        sort_files(fat_disk, args.verbose)
+        sort_files(fat_disk)
         exit()
 
 
