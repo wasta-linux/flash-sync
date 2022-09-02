@@ -1,3 +1,5 @@
+import config
+
 """
 DEVICE LAYOUT
 

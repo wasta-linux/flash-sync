@@ -42,7 +42,7 @@ def sort_files(disk):
                 p.set_cluster_chain_entries(disk.fat_device, chain, entries, deleted_count)
 
 def list_files(disk, filter=None):
-    for p in disk.partitions.values():
+    for i, p in disk.partitions.items():
         for f in p.files:
             if not filter or f.type == filter:
                 print(f.get_full_path())
@@ -133,8 +133,8 @@ def main():
     )
 
     args = parser.parse_args()
-    fat_disk = Disk(args.device[0])
     config.VERBOSE = args.verbose
+    fat_disk = Disk(args.device[0])
 
     if args.dir:
         show_directories(fat_disk)
@@ -143,6 +143,8 @@ def main():
         show_info(fat_disk)
         exit()
     if args.list:
+        if config.VERBOSE:
+            print(f"Listing files on {fat_disk}")
         list_files(fat_disk)
         exit()
     if args.sort:

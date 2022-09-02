@@ -14,6 +14,8 @@ from util import print_attribs
 class Partition():
     def __init__(self, fat_device, part_table):
         self.begin_offset = part_table.begin_lba * part_table.sector_size
+        if config.VERBOSE:
+            print(f"Initializing partition at offset {self.begin_offset}.")
         # Gather VolumeID details.
         self.volume_id = VolumeID(
             fat_device.read_bytes(part_table.sector_size, self.begin_offset),
@@ -27,6 +29,8 @@ class Partition():
         # Gather FAT details.
         self.fats = {}
         for f in range(1, 3):
+            if config.VERBOSE:
+                print(f"Gathering info from FAT{f}.")
             read_length = self.volume_id.sectors_per_fat * self.volume_id.bytes_per_sector
             base_lba = int(self.volume_id.fat_begin_offset / self.volume_id.bytes_per_sector)
             begin_lba = base_lba + (f - 1) * self.volume_id.sectors_per_fat
@@ -35,12 +39,23 @@ class Partition():
             self.fats[f] = FAT(fat_device, fat_bytes, begin_lba)
 
         # Build file and directory lists (in disk order).
+        if config.VERBOSE:
+            print(f"Getting list of partition files.")
         self.files = self.get_file_list(fat_device)
         self.dir_cluster_indexes = self.get_dir_cluster_indexes(fat_device)
         self.directories = self.get_dir_list(fat_device)
 
     def get_file_list(self, device, files=list()):
-        entries = self.get_child_entries(device, self.volume_id.root_dir_first_cluster)
+        if config.VERBOSE:
+            print(f"Getting child entries starting in cluster {self.volume_id.root_dir_first_cluster}")
+        root_cluster_chain = self.get_chain(device, self.volume_id.root_dir_first_cluster)
+        if config.VERBOSE:
+            print(f"Cluster chain: {root_cluster_chain}")
+        entries = []
+        for c in root_cluster_chain:
+            entries.extend(self.get_child_entries(device, c))
+        if config.VERBOSE:
+            print(f"Found {len(entries)} entries.")
         return self.get_files_from_entries(device, files, ['/'], entries)
 
     def get_child_entries(self, device, cluster_index):
@@ -51,15 +66,25 @@ class Partition():
         return self.get_entries_from_cluster(cluster)
 
     def get_files_from_entries(self, device, files, parent_path, entries):
+        if config.VERBOSE:
+            print(f"Gathering file info from {'/'.join(parent_path)}")
         long_name = ''
-        for e in entries:
+        for i, e in enumerate(entries):
+            if config.VERBOSE:
+                print(f"Reading entry {i+1}")
             if not e.is_deleted():
                 if e.is_empty():
+                    if config.VERBOSE:
+                        print(f"This entry has been deleted.")
                     continue
                 elif e.is_long_form_name():
+                    if config.VERBOSE:
+                        print(f"This is a long-form name entry.")
                     entry = LFN(e.hex_data)
                     long_name = entry.long_filename + long_name
                 else:
+                    if config.VERBOSE:
+                        print(f"This is a file/directory entry.")
                     entry = Dir(e.hex_data)
                     if entry.short_filename.rstrip() == '.' or entry.short_filename.rstrip() == '..':
                         # Skip "." and ".." dir shortcut.
@@ -78,12 +103,16 @@ class Partition():
                             parent_path + [entry.long_filename],
                             child_entries
                         )
+        if config.VERBOSE:
+            print(f"Files found: {', '.join([f.short_name for f in files])}")
         return files
 
     def get_dir_list(self, device):
         dir_groups = {}
         for i in self.dir_cluster_indexes:
             cluster_chain = self.get_chain(device, i)
+            if config.VERBOSE:
+                print(f"Cluster index: {i}; cluster chain: {', '.join([str(c) for c in cluster_chain])}")
             entries = self.get_entries_from_chain(device, cluster_chain.copy())
             file_groups, deleted_count = self.split_entries_into_file_groups(entries)
             dir_groups[i] = {
@@ -97,11 +126,16 @@ class Partition():
         # Get full cluster chain.
         chain = [i]
         end = False
+        next = chain[-1]
         while not end:
-            next = self.get_next_cluster_index(device, i)
+            next = self.get_next_cluster_index(device, next)
+            if config.VERBOSE:
+                print(f"Next cluster index: {next}")
             if next is None:
                 end = True
             else:
+                if config.VERBOSE:
+                    print(f"Cluster chain: {chain}")
                 chain.append(next)
         return chain
 
